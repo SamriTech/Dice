@@ -36,9 +36,9 @@ export default function Home() {
   const [bestStreak, setBestStreak] = useState<number>(0);
   const [totalRolls, setTotalRolls] = useState<number>(0);
 
-  // Prediction State
+  // Prediction State (Allows picking up to 3 numbers for exact choice)
   const [predictionType, setPredictionType] = useState<PredictionType>("high");
-  const [exactNumber, setExactNumber] = useState<number>(6);
+  const [exactNumbers, setExactNumbers] = useState<number[]>([6]);
 
   // Roll Status
   const [result, setResult] = useState<number | null>(null);
@@ -60,12 +60,30 @@ export default function Home() {
     { id: "even", title: "Roll an Even Number", rewardXP: 150, completed: false },
   ]);
 
-  // Next level threshold
   const xpNeeded = level * 300;
 
-  // Streak Multiplier
   const multiplier =
     streak >= 20 ? 5 : streak >= 10 ? 3 : streak >= 5 ? 2 : streak >= 3 ? 1.5 : 1;
+
+  // Toggle exact number selection (allows 1, 2, or up to 3 choices)
+  const toggleExactNumber = (num: number) => {
+    setExactNumbers((prev) => {
+      if (prev.includes(num)) {
+        // If already selected, remove it unless it's the only one selected
+        if (prev.length > 1) {
+          return prev.filter((n) => n !== num);
+        }
+        return prev;
+      } else {
+        // If less than 3, add it; if 3 already selected, replace the oldest one
+        if (prev.length < 3) {
+          return [...prev, num].sort((a, b) => a - b);
+        } else {
+          return [...prev.slice(1), num].sort((a, b) => a - b);
+        }
+      }
+    });
+  };
 
   // -------------------------------------------------------------
   // Roll Handler & Prediction Evaluation
@@ -104,9 +122,10 @@ export default function Home() {
       } else if (predictionType === "odd" && rolledNumber % 2 !== 0) {
         won = true;
         basePoints = 50;
-      } else if (predictionType === "exact" && rolledNumber === exactNumber) {
+      } else if (predictionType === "exact" && exactNumbers.includes(rolledNumber)) {
         won = true;
-        basePoints = 300; // Mega reward for exact match
+        // Payout scales according to how many numbers chosen: 1 choice = 300, 2 choices = 150, 3 choices = 100
+        basePoints = exactNumbers.length === 1 ? 300 : exactNumbers.length === 2 ? 150 : 100;
       }
 
       if (won) {
@@ -130,7 +149,6 @@ export default function Home() {
           return newXp;
         });
 
-        // Confetti on big wins or 6
         if (rolledNumber === 6 || predictionType === "exact" || nextStreak >= 3) {
           confetti({
             particleCount: 75,
@@ -140,14 +158,11 @@ export default function Home() {
           });
         }
       } else {
-        // Failed prediction
         setLastWin(false);
         setStreak(0);
-        // Small consolation XP
         setXp((prev) => Math.min(xpNeeded - 1, prev + 10));
       }
 
-      // Check daily challenges
       setChallenges((prev) =>
         prev.map((ch) => {
           if (ch.completed) return ch;
@@ -159,7 +174,7 @@ export default function Home() {
         })
       );
     });
-  }, [isRolling, predictionType, exactNumber, streak, multiplier, xpNeeded]);
+  }, [isRolling, predictionType, exactNumbers, streak, multiplier, xpNeeded]);
 
   // Spacebar shortcut
   useEffect(() => {
@@ -186,7 +201,7 @@ export default function Home() {
       {/* Dynamic Background Glow */}
       <div className="absolute top-1/4 left-1/2 -translate-x-1/2 -translate-y-1/2 w-[700px] h-[700px] bg-indigo-600/10 blur-[160px] rounded-full pointer-events-none" />
 
-      {/* TOP HUD: Stats, Level, Streak & Controls */}
+      {/* TOP HUD */}
       <header className="w-full max-w-4xl mx-auto flex flex-col sm:flex-row items-center justify-between gap-4 z-10">
         {/* Level & XP Progress */}
         <div className="flex items-center gap-3 bg-slate-900/70 border border-slate-800/80 backdrop-blur-md px-4 py-2 rounded-2xl w-full sm:w-auto justify-between">
@@ -295,16 +310,16 @@ export default function Home() {
         </div>
       </div>
 
-      {/* GAMEPLAY CONTROLS: Prediction Selector & Roll Button */}
+      {/* GAMEPLAY CONTROLS */}
       <footer className="w-full max-w-2xl mx-auto flex flex-col items-center gap-5 z-10">
-        {/* Prediction Selector Header */}
+        {/* Prediction Selector */}
         <div className="w-full flex flex-col items-center gap-2.5">
           <div className="text-xs uppercase font-bold tracking-widest text-slate-400 flex items-center gap-2">
             <span>🎯 Make Your Prediction</span>
             <span className="text-[10px] text-indigo-400 font-normal">(Choice + Risk)</span>
           </div>
 
-          {/* Quick Categories: LOW / HIGH / EVEN / ODD / EXACT */}
+          {/* Quick Categories */}
           <div className="grid grid-cols-2 sm:grid-cols-5 gap-2 w-full">
             <button
               onClick={() => setPredictionType("low")}
@@ -368,28 +383,33 @@ export default function Home() {
               }`}
             >
               <div className="text-sm font-extrabold">🎯 EXACT</div>
-              <div className="text-[10px] text-amber-300/90 font-semibold">6x Payout!</div>
+              <div className="text-[10px] text-amber-300/90 font-semibold">
+                {exactNumbers.length === 1 ? "6x Payout!" : exactNumbers.length === 2 ? "3x Payout!" : "2x Payout!"}
+              </div>
             </button>
           </div>
 
-          {/* Exact Number Sub-Selector (When EXACT is active) */}
+          {/* Exact Numbers Multi-Selector (Allows picking up to 3 numbers) */}
           {predictionType === "exact" && (
             <div className="flex items-center gap-2 mt-1 animate-fadeIn">
-              <span className="text-xs text-slate-400 mr-1">Pick number:</span>
-              {[1, 2, 3, 4, 5, 6].map((num) => (
-                <button
-                  key={num}
-                  onClick={() => setExactNumber(num)}
-                  disabled={isRolling}
-                  className={`w-9 h-9 rounded-xl font-black text-sm border transition-all cursor-pointer ${
-                    exactNumber === num
-                      ? "bg-amber-500 border-amber-300 text-slate-950 scale-110 shadow-md shadow-amber-500/30"
-                      : "bg-slate-800 border-slate-700 text-slate-300 hover:border-slate-500"
-                  }`}
-                >
-                  {num}
-                </button>
-              ))}
+              <span className="text-xs text-slate-400 mr-1">Pick up to 3:</span>
+              {[1, 2, 3, 4, 5, 6].map((num) => {
+                const isSelected = exactNumbers.includes(num);
+                return (
+                  <button
+                    key={num}
+                    onClick={() => toggleExactNumber(num)}
+                    disabled={isRolling}
+                    className={`w-9 h-9 rounded-xl font-black text-sm border transition-all cursor-pointer ${
+                      isSelected
+                        ? "bg-amber-500 border-amber-300 text-slate-950 scale-110 shadow-md shadow-amber-500/30"
+                        : "bg-slate-800 border-slate-700 text-slate-300 hover:border-slate-500"
+                    }`}
+                  >
+                    {num}
+                  </button>
+                );
+              })}
             </div>
           )}
         </div>
