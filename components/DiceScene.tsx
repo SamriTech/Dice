@@ -4,17 +4,21 @@ import React, { useEffect, useRef, useImperativeHandle, forwardRef } from "react
 import * as THREE from "three";
 import { RoundedBoxGeometry } from "three/examples/jsm/geometries/RoundedBoxGeometry.js";
 
+export type DiceSkin = "classic" | "neon" | "gold" | "magma" | "crystal";
+
 export interface DiceSceneRef {
   rollTo: (targetNumber: number, onComplete?: () => void) => void;
+  setSkin: (skin: DiceSkin) => void;
 }
 
 interface DiceSceneProps {
   onRollComplete?: (result: number) => void;
   soundEnabled?: boolean;
+  skin?: DiceSkin;
 }
 
 // -------------------------------------------------------------
-// Frame-Accurate Collision Sound Synthesizer
+// Audio Synthesis Engine
 // -------------------------------------------------------------
 let sharedAudioCtx: AudioContext | null = null;
 
@@ -22,9 +26,7 @@ function getAudioContext(): AudioContext | null {
   if (typeof window === "undefined") return null;
   if (!sharedAudioCtx) {
     const AudioCtx = window.AudioContext || (window as unknown as { webkitAudioContext: typeof AudioContext }).webkitAudioContext;
-    if (AudioCtx) {
-      sharedAudioCtx = new AudioCtx();
-    }
+    if (AudioCtx) sharedAudioCtx = new AudioCtx();
   }
   if (sharedAudioCtx && sharedAudioCtx.state === "suspended") {
     sharedAudioCtx.resume();
@@ -43,31 +45,25 @@ function playImpactSound(intensity: "heavy" | "medium" | "soft") {
     soft: { vol: 0.15, thudFreq: 420, clickFreq: 1900, decay: 0.04 },
   }[intensity];
 
-  // 1. Sharp acrylic transient click
   const clickOsc = ctx.createOscillator();
   const clickGain = ctx.createGain();
   clickOsc.type = "square";
   clickOsc.frequency.setValueAtTime(config.clickFreq, now);
   clickOsc.frequency.exponentialRampToValueAtTime(160, now + 0.025);
-
   clickGain.gain.setValueAtTime(config.vol * 0.4, now);
   clickGain.gain.exponentialRampToValueAtTime(0.0001, now + 0.025);
-
   clickOsc.connect(clickGain);
   clickGain.connect(ctx.destination);
   clickOsc.start(now);
   clickOsc.stop(now + 0.03);
 
-  // 2. Resonant tabletop thud
   const thudOsc = ctx.createOscillator();
   const thudGain = ctx.createGain();
   thudOsc.type = "triangle";
   thudOsc.frequency.setValueAtTime(config.thudFreq, now);
   thudOsc.frequency.exponentialRampToValueAtTime(60, now + config.decay);
-
   thudGain.gain.setValueAtTime(config.vol, now);
   thudGain.gain.exponentialRampToValueAtTime(0.0001, now + config.decay);
-
   thudOsc.connect(thudGain);
   thudGain.connect(ctx.destination);
   thudOsc.start(now);
@@ -75,73 +71,121 @@ function playImpactSound(intensity: "heavy" | "medium" | "soft") {
 }
 
 // -------------------------------------------------------------
-// Face textures generator for numbers 1 to 6
+// Procedural Textures for All Dice Skins
 // -------------------------------------------------------------
-function createDiceFaceTexture(number: number): THREE.CanvasTexture {
+function createDiceFaceTexture(number: number, skin: DiceSkin = "classic"): THREE.CanvasTexture {
   const size = 512;
   const canvas = document.createElement("canvas");
   canvas.width = size;
   canvas.height = size;
   const ctx = canvas.getContext("2d")!;
 
-  // Glossy Off-White Acrylic Base
-  const baseGrad = ctx.createRadialGradient(
-    size / 2,
-    size / 2,
-    size * 0.1,
-    size / 2,
-    size / 2,
-    size * 0.75
-  );
-  baseGrad.addColorStop(0, "#ffffff");
-  baseGrad.addColorStop(0.85, "#f6f7f9");
-  baseGrad.addColorStop(1, "#e2e8f0");
+  // 1. Background per skin
+  if (skin === "neon") {
+    ctx.fillStyle = "#09090e";
+    ctx.fillRect(0, 0, size, size);
+    ctx.strokeStyle = "#06b6d4";
+    ctx.lineWidth = 14;
+    ctx.strokeRect(14, 14, size - 28, size - 28);
+  } else if (skin === "gold") {
+    const goldGrad = ctx.createLinearGradient(0, 0, size, size);
+    goldGrad.addColorStop(0, "#fde047");
+    goldGrad.addColorStop(0.5, "#ca8a04");
+    goldGrad.addColorStop(1, "#854d0e");
+    ctx.fillStyle = goldGrad;
+    ctx.fillRect(0, 0, size, size);
+  } else if (skin === "magma") {
+    const magmaGrad = ctx.createRadialGradient(size / 2, size / 2, 20, size / 2, size / 2, size * 0.7);
+    magmaGrad.addColorStop(0, "#fb923c");
+    magmaGrad.addColorStop(0.6, "#dc2626");
+    magmaGrad.addColorStop(1, "#450a0a");
+    ctx.fillStyle = magmaGrad;
+    ctx.fillRect(0, 0, size, size);
+  } else if (skin === "crystal") {
+    const crystalGrad = ctx.createLinearGradient(0, 0, size, size);
+    crystalGrad.addColorStop(0, "#a7f3d0");
+    crystalGrad.addColorStop(0.5, "#10b981");
+    crystalGrad.addColorStop(1, "#064e3b");
+    ctx.fillStyle = crystalGrad;
+    ctx.fillRect(0, 0, size, size);
+  } else {
+    // Classic Acrylic
+    const baseGrad = ctx.createRadialGradient(size / 2, size / 2, size * 0.1, size / 2, size / 2, size * 0.75);
+    baseGrad.addColorStop(0, "#ffffff");
+    baseGrad.addColorStop(0.85, "#f6f7f9");
+    baseGrad.addColorStop(1, "#e2e8f0");
+    ctx.fillStyle = baseGrad;
+    ctx.fillRect(0, 0, size, size);
+  }
 
-  ctx.fillStyle = baseGrad;
-  ctx.fillRect(0, 0, size, size);
-
+  // 2. Pip Drawing with skin-specific colors and glows
   const drawPip = (x: number, y: number, radius = 34) => {
-    // Outer shadow ring
-    const shadowGrad = ctx.createRadialGradient(
-      x - 3,
-      y - 3,
-      radius * 0.6,
-      x,
-      y,
-      radius + 5
-    );
-    shadowGrad.addColorStop(0, "rgba(0, 0, 0, 0.45)");
-    shadowGrad.addColorStop(0.7, "rgba(0, 0, 0, 0.2)");
-    shadowGrad.addColorStop(1, "rgba(255, 255, 255, 0.4)");
+    if (skin === "neon") {
+      // Glowing Cyan/Magenta Pip
+      ctx.shadowColor = "#22d3ee";
+      ctx.shadowBlur = 25;
+      ctx.fillStyle = "#38bdf8";
+      ctx.beginPath();
+      ctx.arc(x, y, radius, 0, Math.PI * 2);
+      ctx.fill();
+      ctx.shadowBlur = 0;
+      ctx.fillStyle = "#ffffff";
+      ctx.beginPath();
+      ctx.arc(x, y, radius * 0.45, 0, Math.PI * 2);
+      ctx.fill();
+    } else if (skin === "gold") {
+      // Inset Dark Obsidian / Ruby Pip
+      const pipGrad = ctx.createRadialGradient(x, y, 4, x, y, radius);
+      pipGrad.addColorStop(0, "#450a0a");
+      pipGrad.addColorStop(1, "#18181b");
+      ctx.fillStyle = pipGrad;
+      ctx.beginPath();
+      ctx.arc(x, y, radius, 0, Math.PI * 2);
+      ctx.fill();
+      ctx.fillStyle = "rgba(253, 224, 71, 0.6)";
+      ctx.beginPath();
+      ctx.arc(x - 8, y - 8, 8, 0, Math.PI * 2);
+      ctx.fill();
+    } else if (skin === "magma") {
+      // Fiery Yellow Ember Pip
+      ctx.shadowColor = "#fef08a";
+      ctx.shadowBlur = 20;
+      ctx.fillStyle = "#fef08a";
+      ctx.beginPath();
+      ctx.arc(x, y, radius, 0, Math.PI * 2);
+      ctx.fill();
+      ctx.shadowBlur = 0;
+    } else if (skin === "crystal") {
+      // Emerald Glow Pip
+      ctx.fillStyle = "#ecfdf5";
+      ctx.beginPath();
+      ctx.arc(x, y, radius, 0, Math.PI * 2);
+      ctx.fill();
+    } else {
+      // Classic Inset Acrylic Pip
+      const shadowGrad = ctx.createRadialGradient(x - 3, y - 3, radius * 0.6, x, y, radius + 5);
+      shadowGrad.addColorStop(0, "rgba(0, 0, 0, 0.45)");
+      shadowGrad.addColorStop(0.7, "rgba(0, 0, 0, 0.2)");
+      shadowGrad.addColorStop(1, "rgba(255, 255, 255, 0.4)");
+      ctx.fillStyle = shadowGrad;
+      ctx.beginPath();
+      ctx.arc(x, y, radius + 5, 0, Math.PI * 2);
+      ctx.fill();
 
-    ctx.fillStyle = shadowGrad;
-    ctx.beginPath();
-    ctx.arc(x, y, radius + 5, 0, Math.PI * 2);
-    ctx.fill();
+      const pipGrad = ctx.createRadialGradient(x - radius * 0.3, y - radius * 0.3, radius * 0.1, x, y, radius);
+      pipGrad.addColorStop(0, "#27272a");
+      pipGrad.addColorStop(0.7, "#111113");
+      pipGrad.addColorStop(1, "#09090b");
+      ctx.fillStyle = pipGrad;
+      ctx.beginPath();
+      ctx.arc(x, y, radius, 0, Math.PI * 2);
+      ctx.fill();
 
-    // Glossy black core
-    const pipGrad = ctx.createRadialGradient(
-      x - radius * 0.3,
-      y - radius * 0.3,
-      radius * 0.1,
-      x,
-      y,
-      radius
-    );
-    pipGrad.addColorStop(0, "#27272a");
-    pipGrad.addColorStop(0.7, "#111113");
-    pipGrad.addColorStop(1, "#09090b");
-
-    ctx.fillStyle = pipGrad;
-    ctx.beginPath();
-    ctx.arc(x, y, radius, 0, Math.PI * 2);
-    ctx.fill();
-
-    // Specular highlight
-    ctx.fillStyle = "rgba(255, 255, 255, 0.45)";
-    ctx.beginPath();
-    ctx.arc(x - radius * 0.32, y - radius * 0.32, radius * 0.26, 0, Math.PI * 2);
-    ctx.fill();
+      ctx.fillStyle = "rgba(255, 255, 255, 0.45)";
+      ctx.beginPath();
+      ctx.arc(x - radius * 0.32, y - radius * 0.32, radius * 0.26, 0, Math.PI * 2);
+      ctx.fill();
+    }
   };
 
   const c = size / 2;
@@ -193,27 +237,15 @@ function createDiceFaceTexture(number: number): THREE.CanvasTexture {
 }
 
 // -------------------------------------------------------------
-// Exact Face Rotations to bring the target number onto the TOP face
-// Three.js Box Materials order:
+// Exact Face Rotations for Top Alignment
 // [0: Face 1 (+X), 1: Face 6 (-X), 2: Face 2 (+Y), 3: Face 5 (-Y), 4: Face 3 (+Z), 5: Face 4 (-Z)]
 // -------------------------------------------------------------
 const FACE_ROTATIONS: Record<number, { x: number; y: number; z: number }> = {
-  // Face 1 (+X): Rotating Z by +90 deg moves +X to +Y (TOP)
   1: { x: 0, y: 0, z: Math.PI / 2 },
-
-  // Face 6 (-X): Rotating Z by -90 deg moves -X to +Y (TOP)
   6: { x: 0, y: 0, z: -Math.PI / 2 },
-
-  // Face 2 (+Y): Already on +Y (TOP)
   2: { x: 0, y: 0, z: 0 },
-
-  // Face 5 (-Y): Rotating X by 180 deg moves -Y to +Y (TOP)
   5: { x: Math.PI, y: 0, z: 0 },
-
-  // Face 3 (+Z): Rotating X by -90 deg moves +Z to +Y (TOP)
   3: { x: -Math.PI / 2, y: 0, z: 0 },
-
-  // Face 4 (-Z): Rotating X by +90 deg moves -Z to +Y (TOP)
   4: { x: Math.PI / 2, y: 0, z: 0 },
 };
 
@@ -222,16 +254,45 @@ function easeOutCubic(t: number): number {
 }
 
 const DiceScene = forwardRef<DiceSceneRef, DiceSceneProps>(
-  ({ onRollComplete, soundEnabled = true }, ref) => {
+  ({ onRollComplete, soundEnabled = true, skin = "classic" }, ref) => {
     const containerRef = useRef<HTMLDivElement>(null);
     const diceRef = useRef<THREE.Mesh | null>(null);
     const isRollingRef = useRef<boolean>(false);
     const hasRolledRef = useRef<boolean>(false);
     const soundEnabledRef = useRef<boolean>(soundEnabled);
+    const currentSkinRef = useRef<DiceSkin>(skin);
+    const cameraRef = useRef<THREE.PerspectiveCamera | null>(null);
+    const cameraBasePos = useRef<THREE.Vector3>(new THREE.Vector3(2.8, 3.4, 4.6));
 
     useEffect(() => {
       soundEnabledRef.current = soundEnabled;
     }, [soundEnabled]);
+
+    const updateDiceSkin = (newSkin: DiceSkin) => {
+      if (!diceRef.current) return;
+      currentSkinRef.current = newSkin;
+      const faceNumbers = [1, 6, 2, 5, 3, 4];
+      const newMaterials = faceNumbers.map((num) => {
+        const texture = createDiceFaceTexture(num, newSkin);
+        const isGold = newSkin === "gold";
+        const isNeon = newSkin === "neon";
+        return new THREE.MeshPhysicalMaterial({
+          map: texture,
+          roughness: isGold ? 0.25 : 0.1,
+          metalness: isGold ? 0.85 : isNeon ? 0.2 : 0.02,
+          clearcoat: 0.95,
+          clearcoatRoughness: 0.05,
+          reflectivity: isGold ? 0.9 : 0.7,
+          emissive: isNeon ? new THREE.Color(0x082f49) : new THREE.Color(0x000000),
+          emissiveIntensity: isNeon ? 0.4 : 0.0,
+        });
+      });
+      diceRef.current.material = newMaterials;
+    };
+
+    useEffect(() => {
+      updateDiceSkin(skin);
+    }, [skin]);
 
     const rollAnimRef = useRef<{
       startTime: number;
@@ -257,7 +318,6 @@ const DiceScene = forwardRef<DiceSceneRef, DiceSceneProps>(
         const dice = diceRef.current;
         const baseRotation = FACE_ROTATIONS[targetNumber] || { x: 0, y: 0, z: 0 };
 
-        // Even integer number of 360-degree rotations (2 * PI * N)
         const fullSpinsX = 4 * Math.PI * 2;
         const fullSpinsY = 6 * Math.PI * 2;
         const fullSpinsZ = 4 * Math.PI * 2;
@@ -279,6 +339,9 @@ const DiceScene = forwardRef<DiceSceneRef, DiceSceneProps>(
           onComplete,
         };
       },
+      setSkin: (newSkin: DiceSkin) => {
+        updateDiceSkin(newSkin);
+      },
     }));
 
     useEffect(() => {
@@ -291,8 +354,9 @@ const DiceScene = forwardRef<DiceSceneRef, DiceSceneProps>(
       // 1. Scene & Camera
       const scene = new THREE.Scene();
       const camera = new THREE.PerspectiveCamera(38, width / height, 0.1, 100);
-      camera.position.set(2.8, 3.4, 4.6);
+      camera.position.copy(cameraBasePos.current);
       camera.lookAt(0, -0.1, 0);
+      cameraRef.current = camera;
 
       // 2. Transparent WebGL Renderer
       const renderer = new THREE.WebGLRenderer({ antialias: true, alpha: true });
@@ -330,11 +394,9 @@ const DiceScene = forwardRef<DiceSceneRef, DiceSceneProps>(
 
       // 4. 3D Rounded Dice
       const diceGeometry = new RoundedBoxGeometry(2, 2, 2, 16, 0.32);
-      
-      // Face arrangement: [0: +X, 1: -X, 2: +Y, 3: -Y, 4: +Z, 5: -Z]
       const faceNumbers = [1, 6, 2, 5, 3, 4];
       const materials = faceNumbers.map((num) => {
-        const texture = createDiceFaceTexture(num);
+        const texture = createDiceFaceTexture(num, currentSkinRef.current);
         return new THREE.MeshPhysicalMaterial({
           map: texture,
           roughness: 0.1,
@@ -364,8 +426,10 @@ const DiceScene = forwardRef<DiceSceneRef, DiceSceneProps>(
       floor.receiveShadow = true;
       scene.add(floor);
 
-      // 6. Physics Animation Loop
+      // 6. Physics Animation Loop with Camera Shake & Collision Sync
       let animationFrameId: number;
+      let shakeIntensity = 0;
+
       const animate = (time: number) => {
         animationFrameId = requestAnimationFrame(animate);
 
@@ -387,6 +451,7 @@ const DiceScene = forwardRef<DiceSceneRef, DiceSceneProps>(
           } else if (progress < 0.76) {
             if (!anim.hit1Played) {
               anim.hit1Played = true;
+              shakeIntensity = 0.12; // Trigger camera shake on heavy impact
               if (soundEnabledRef.current) playImpactSound("heavy");
             }
             const tNorm = (progress - 0.48) / (0.76 - 0.48);
@@ -394,6 +459,7 @@ const DiceScene = forwardRef<DiceSceneRef, DiceSceneProps>(
           } else if (progress < 0.96) {
             if (!anim.hit2Played) {
               anim.hit2Played = true;
+              shakeIntensity = 0.05; // Minor camera shake on bounce
               if (soundEnabledRef.current) playImpactSound("medium");
             }
             const tNorm = (progress - 0.76) / (0.96 - 0.76);
@@ -406,7 +472,7 @@ const DiceScene = forwardRef<DiceSceneRef, DiceSceneProps>(
             dice.position.y = 0.1;
           }
 
-          // Complete Animation: Lock rotation to EXACT face angles
+          // Complete Animation
           if (progress >= 1) {
             dice.rotation.set(
               anim.finalTargetRot.x,
@@ -422,6 +488,20 @@ const DiceScene = forwardRef<DiceSceneRef, DiceSceneProps>(
           }
         } else if (dice && !isRollingRef.current && !hasRolledRef.current) {
           dice.rotation.y += 0.003;
+        }
+
+        // Camera Shake Damping
+        if (cameraRef.current) {
+          if (shakeIntensity > 0.001) {
+            cameraRef.current.position.set(
+              cameraBasePos.current.x + (Math.random() - 0.5) * shakeIntensity,
+              cameraBasePos.current.y + (Math.random() - 0.5) * shakeIntensity,
+              cameraBasePos.current.z + (Math.random() - 0.5) * shakeIntensity
+            );
+            shakeIntensity *= 0.85; // Rapid decay
+          } else {
+            cameraRef.current.position.copy(cameraBasePos.current);
+          }
         }
 
         renderer.render(scene, camera);
@@ -461,7 +541,7 @@ const DiceScene = forwardRef<DiceSceneRef, DiceSceneProps>(
     return (
       <div
         ref={containerRef}
-        style={{ width: "100%", height: "450px" }}
+        style={{ width: "100%", height: "430px" }}
         className="flex items-center justify-center relative"
       />
     );
